@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+
+set -eu
+
+trap 'cd ${OLDDIR}' INT HUP TERM EXIT
+
+SCRIPTNAME=`readlink -f ${0}`
+WORKDIR=${SCRIPTNAME%/*}
+SRCDIR=${WORKDIR}/
+BHYVEDIR=${SRCDIR}/usr.sbin/bhyve
+VMMAPIDIR=${SRCDIR}/lib/libvmmapi
+MAKEFILE=${SRCDIR}/Makefile
+OLDDIR=`pwd`
+DEFINES=""
+
+usage() {
+    eval 1>&2
+    printf  "$0 [-aAkKwW]\n"
+    printf "[Re]build and install a certain component for virtual machine testing\n"
+    printf "Options in uppercase have the same meaning as those in lowercase"
+    printf " but will clean working directory first (i.e., -DNO_CLEAN or -DKERNFAST"
+    printf " will not be passed when running 'make')\n"
+    printf "\n"
+    printf "\t-a        Rebuild and install 'all' - equivalent to -w -k\n"
+    printf "\t-A        Rebuild and install 'all' but clean the kernel work"
+    printf " directory before building - equivalent to -w -K\n"
+    printf "\n"
+    printf "\t-b        Rebuild and install bhyve only\n"
+    printf "\n"
+    printf "\t-c        Rebuild cscope and ctags pools\n"
+    printf "\n"
+    printf "\t-k        Rebuild and install kernel\n"
+    printf "\n"
+    printf "\t-w        Rebuild and install userspace applications\n"
+    exit 0
+}
+
+build_install_world() {
+    local DEFS="${1:-} -DWITH_BHYVE_SNAPSHOT"
+
+    # Clean userspace bhyve to make sure headers are recompiled
+    pushd ${BHYVEDIR}
+    make clean
+    popd
+
+    # Clean libvmmapi to make sure headers are recompiled
+    pushd ${VMMAPIDIR}
+    make clean
+    popd
+
+    make -f ${MAKEFILE} buildworld ${DEFS} -j9
+    make -f ${MAKEFILE} installworld -j9
+} > world.out
+
+build_install_kernel() {
+    local DEFS="${1:-}"
+    make -f ${MAKEFILE} buildkernel ${DEFS} -j9
+    make -f ${MAKEFILE} installkernel -j9
+} > kernel.out
+
+build_install_bhyve() {
+    cd usr.sbin/bhyve
+    make clean
+    make -j9
+    make install
+} > bhyve.out
+
+cscope_ctags() {
+    cscope -R -q -k
+    exctags -R
+} 2>&1 >/dev/null </dev/null
+
+cd ${SRCDIR}
+
+if [ $# -lt 1 ]; then usage; fi
+
+date
+
+while getopts "aAbckKwW" opt; do
+    case "${opt}" in
+        a) SUB_BUILD="-wk" ;& # fallthrough
+        A)
+            echo "Building both world and kernel..."
+            $0 ${SUB_BUILD:-"-wK"}
+            ;;
+        b)
+            echo "Building and installing bhyve..."
+            build_install_bhyve
+            ;;
+        c) cscope_ctags ;;
+        k) DEFINES="-DKERNFAST" ;& # fallthrough
+        K)
+            echo "Building and installing kernel..."
+            build_install_kernel ${DEFINES}
+            ;;
+        w) DEFINES="-DNO_CLEAN" ;& # fallthrough
+        W)
+            echo "Building and installing world..."
+            build_install_world ${DEFINES}
+            ;;
+        *)
+            echo "Unknown parameter: ${opt}"
+            exit 2
+            ;;
+    esac
+done
+
+cd ${OLDDIR}
